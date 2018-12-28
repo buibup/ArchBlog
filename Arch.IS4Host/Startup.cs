@@ -4,6 +4,8 @@
 
 using Arch.IS4Host.Data;
 using Arch.IS4Host.Models;
+using IdentityServer4.EntityFramework.DbContexts;
+using IdentityServer4.EntityFramework.Mappers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
@@ -51,20 +53,14 @@ namespace Arch.IS4Host
                 iis.AutomaticAuthentication = false;
             });
 
-            var builder = services.AddIdentityServer(options =>
-            {
-                options.Events.RaiseErrorEvents = true;
-                options.Events.RaiseInformationEvents = true;
-                options.Events.RaiseFailureEvents = true;
-                options.Events.RaiseSuccessEvents = true;
-            })
+            var builder = services.AddIdentityServer()
             // Use our Postgres Database for storing configuration data
             .AddConfigurationStore(configDb => {
                 configDb.ConfigureDbContext = db => db.UseNpgsql(connectionString,
                 sql => sql.MigrationsAssembly(migrationAssembly));
             })
             // Use our Postgres Database for storing operational data
-            .AddConfigurationStore(operationalDb => {
+            .AddOperationalStore(operationalDb => {
                 operationalDb.ConfigureDbContext = db => db.UseNpgsql(connectionString,
                 sql => sql.MigrationsAssembly(migrationAssembly));
             })
@@ -92,6 +88,8 @@ namespace Arch.IS4Host
 
         public void Configure(IApplicationBuilder app)
         {
+            InitializeDatabase(app);
+
             if (Environment.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
@@ -105,6 +103,47 @@ namespace Arch.IS4Host
             app.UseStaticFiles();
             app.UseIdentityServer();
             app.UseMvcWithDefaultRoute();
+        }
+
+        private void InitializeDatabase(IApplicationBuilder app){
+            // Using a services scope
+            using(var serviceScope = app.ApplicationServices.GetService<IServiceScopeFactory>().CreateScope())
+            {
+                // Create PersistedGrant Database (we're using a single db here)
+                // if it doesn't exits, and run outstanding migrations
+                var persistedGrantDbContext = serviceScope.ServiceProvider
+                    .GetRequiredService<PersistedGrantDbContext>();
+                persistedGrantDbContext.Database.Migrate();
+
+                // Create IS4 Configuratoin Database (we're using a single db here)
+                // if it does'nt exist, and run outstanding migrations
+                var configDbcontext = serviceScope.ServiceProvider
+                    .GetRequiredService<ConfigurationDbContext>();
+                configDbcontext.Database.Migrate();
+
+                // Generating the records corresponding to the Clients, IdentityResoures, and
+                // API Resources that are defined in our Config class
+                if(!configDbcontext.Clients.AnyAsync().Result){
+                    foreach(var client in Config.GetClients()){
+                        configDbcontext.Clients.Add(client.ToEntity());
+                    }
+                    configDbcontext.SaveChanges();
+                }
+                
+                if(!configDbcontext.IdentityResources.AnyAsync().Result){
+                    foreach(var res in Config.GetIdentityResources()){
+                        configDbcontext.IdentityResources.Add(res.ToEntity());
+                    }
+                    configDbcontext.SaveChanges();
+                }
+                
+                if(!configDbcontext.ApiResources.AnyAsync().Result){
+                    foreach(var api in Config.GetApis()){
+                    configDbcontext.ApiResources.Add(api.ToEntity());
+                }
+                    configDbcontext.SaveChanges();
+                }
+            }
         }
     }
 }
